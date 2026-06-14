@@ -343,7 +343,7 @@ def get_api_key() -> str | None:
 @st.cache_resource
 def get_gemini_model(api_key: str):
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-flash")
+    return genai.GenerativeModel("gemini-2.0-flash")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
