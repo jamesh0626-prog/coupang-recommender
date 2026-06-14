@@ -37,12 +37,13 @@ MOCK_PRODUCTS = [
         "review_count": 1823,
         "weight": "135g",
         "icon": "🔌",
+        "coupang_search_query": "UGREEN 100W GaN 4포트 충전기",
         "spec": {
             "최대출력": "100W",
-            "포트구성": "C×3 + A×1",
-            "GaN": "5세대",
+            "포트구성": "C×3+A×1",
+            "GaN세대": "5세대",
             "무게": "135g",
-            "크기": "65×65×32mm",
+            "크기": "65×65mm",
         },
         "detail_text": """
 UGREEN Nexode 100W 충전기는 GaN(질화갈륨) 5세대 칩을 탑재한 초소형 고출력 충전기입니다.
@@ -89,12 +90,13 @@ UGREEN 독자 특허 알고리즘으로 단순 전력 공유가 아닌 기기별
         "review_count": 4521,
         "weight": "62g",
         "icon": "🔌",
+        "coupang_search_query": "샤오미 33W GaN 초소형 충전기",
         "spec": {
             "최대출력": "33W",
-            "포트구성": "C×1 + A×1",
-            "GaN": "3세대",
+            "포트구성": "C×1+A×1",
+            "GaN세대": "3세대",
             "무게": "62g",
-            "크기": "42×42×28mm",
+            "크기": "42×42mm",
         },
         "detail_text": """
 샤오미 33W GaN 충전기. 62g 초경량으로 손가락 세 개 크기의 미니 폼팩터.
@@ -134,12 +136,13 @@ PC+ABS 혼합 합성수지 케이스. 62g의 가벼운 무게에도 불구하고
         "review_count": 892,
         "weight": "980g",
         "icon": "🌀",
+        "coupang_search_query": "다이슨 AM07 무날개 선풍기",
         "spec": {
-            "방식": "무날개 Air Multiplier",
-            "소음": "최저 39dB",
-            "풍량단계": "10단계",
+            "방식": "무날개",
+            "소음": "39dB~",
+            "풍량": "10단계",
             "배터리": "3000mAh",
-            "사용시간": "최대 6시간",
+            "사용시간": "최대6h",
             "무게": "980g",
         },
         "detail_text": """
@@ -188,12 +191,13 @@ PC+ABS 혼합 합성수지 케이스. 62g의 가벼운 무게에도 불구하고
         "review_count": 3241,
         "weight": "3.8kg",
         "icon": "🌀",
+        "coupang_search_query": "DC인버터 선풍기 16단계 저소음 스탠드",
         "spec": {
-            "방식": "날개형 (12인치 7날)",
-            "소음": "최저 22dB",
-            "풍량단계": "16단계",
-            "소비전력": "2W~38W",
-            "높이조절": "90~130cm 무단",
+            "방식": "날개형12인치",
+            "소음": "22dB~",
+            "풍량": "16단계",
+            "소비전력": "2~38W",
+            "높이": "90~130cm",
             "무게": "3.8kg",
         },
         "detail_text": """
@@ -495,18 +499,35 @@ def render_product_card(data: dict):
         stars = "⭐" * int(p["rating"])
         st.caption(f"{stars} **{p['rating']}** · 리뷰 {p['review_count']:,}개 · {p['weight']}")
 
-        # 쿠팡 검색 링크 (상품명으로 검색 결과 페이지 이동)
+        # 쿠팡 유사 상품 검색 버튼
+        search_query = p.get("coupang_search_query", p["name"])
         coupang_url = (
             "https://www.coupang.com/np/search?q="
-            + urllib.parse.quote(p["name"])
+            + urllib.parse.quote(search_query)
         )
-        st.link_button("🛒 쿠팡에서 확인하기", coupang_url, use_container_width=True)
+        col_btn, col_note = st.columns([2, 3])
+        with col_btn:
+            st.link_button("🔍 쿠팡 유사 상품 검색", coupang_url, use_container_width=True)
+        with col_note:
+            st.caption(f"🔎 검색어: **{search_query}**  \n⚠️ 현재 예시 데이터 기반 — 실제 상품과 다를 수 있음")
 
-        # 스펙 표
-        spec_items = list(p["spec"].items())
-        cols = st.columns(len(spec_items))
-        for col, (k, v) in zip(cols, spec_items):
-            col.metric(k, v)
+        # 스펙 표 (잘림 없는 HTML 테이블)
+        spec = p["spec"]
+        th = "".join(
+            f"<th style='text-align:center;padding:6px 8px;font-size:0.78rem;"
+            f"color:#888;font-weight:normal;border-bottom:2px solid #eee;'>{k}</th>"
+            for k in spec.keys()
+        )
+        td = "".join(
+            f"<td style='text-align:center;padding:6px 8px;font-size:0.9rem;"
+            f"font-weight:600;color:#1a1a2e;'>{v}</td>"
+            for v in spec.values()
+        )
+        st.markdown(
+            f"<table style='width:100%;border-collapse:collapse;margin:8px 0'>"
+            f"<tr>{th}</tr><tr>{td}</tr></table>",
+            unsafe_allow_html=True,
+        )
 
         st.divider()
 
