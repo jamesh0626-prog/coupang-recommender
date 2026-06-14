@@ -1,6 +1,7 @@
 """
 쿠팡 AI 전자기기 추천 & 리뷰 분석 웹앱
 AI Engine: Google Gemini 3.5 Flash
+Data: 네이버 쇼핑 API (실시간) + Mock Data (폴백)
 """
 
 import streamlit as st
@@ -14,6 +15,11 @@ except ImportError:
     st.error("google-generativeai 패키지가 필요합니다: pip install -U google-generativeai")
     st.stop()
 
+try:
+    import httpx
+except ImportError:
+    httpx = None
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 페이지 설정
 # ─────────────────────────────────────────────────────────────────────────────
@@ -25,7 +31,89 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 가상 상품 데이터 (Mock Data)
+# 링크프라이스 제휴 설정
+# ─────────────────────────────────────────────────────────────────────────────
+LINKPRICE_AFFILIATE_ID = "A100705252"
+
+
+def make_affiliate_link(search_query: str) -> str:
+    """상품 검색어 → G마켓 링크프라이스 제휴 링크 자동 생성"""
+    gmarket_search = "https://browse.gmarket.co.kr/search?keyword=" + urllib.parse.quote(search_query)
+    encoded = urllib.parse.quote(gmarket_search, safe="")
+    return f"https://lpweb.kr/click.php?m=gmarket&a={LINKPRICE_AFFILIATE_ID}&l=00l&url={encoded}"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 네이버 쇼핑 API
+# ─────────────────────────────────────────────────────────────────────────────
+def _get_naver_creds() -> tuple[str | None, str | None]:
+    try:
+        return st.secrets["NAVER_CLIENT_ID"], st.secrets["NAVER_CLIENT_SECRET"]
+    except Exception:
+        return None, None
+
+
+def search_naver_shopping(query: str, display: int = 6) -> list:
+    """네이버 쇼핑 검색 API로 실시간 상품 검색"""
+    client_id, client_secret = _get_naver_creds()
+    if not client_id or not httpx:
+        return []
+
+    try:
+        resp = httpx.get(
+            "https://openapi.naver.com/v1/search/shop.json",
+            headers={
+                "X-Naver-Client-Id": client_id,
+                "X-Naver-Client-Secret": client_secret,
+            },
+            params={"query": query, "display": display, "sort": "sim"},
+            timeout=5.0,
+        )
+        items = resp.json().get("items", [])
+    except Exception:
+        return []
+
+    products = []
+    for item in items:
+        name = re.sub(r"<[^>]+>", "", item.get("title", ""))
+        brand = re.sub(r"<[^>]+>", "", item.get("brand", ""))
+        price = int(item.get("lprice", 0))
+        review_count_raw = item.get("reviewCount")
+        review_count = int(review_count_raw) if review_count_raw else None
+        cat3 = item.get("category3", "")
+        cat2 = item.get("category2", "")
+        category = cat3 or cat2 or item.get("category1", "")
+
+        products.append({
+            "id": item.get("productId", ""),
+            "name": name,
+            "price": price,
+            "category": category,
+            "rating": None,
+            "review_count": review_count,
+            "weight": "-",
+            "icon": "🛍️",
+            "image": item.get("image", ""),
+            "mall_name": item.get("mallName", ""),
+            "brand": brand,
+            "naver_link": item.get("link", ""),
+            "spec": {
+                "브랜드": brand or "-",
+                "최저가": f"₩{price:,}",
+                "판매처": item.get("mallName", "-"),
+                "카테고리": category or "-",
+            },
+            "detail_text": f"상품명: {name}\n브랜드: {brand}\n카테고리: {item.get('category1','')} > {cat2} > {cat3}",
+            "reviews_positive": [],
+            "reviews_negative": [],
+            "coupang_search_query": name,
+            "is_real_product": True,
+        })
+    return products
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 가상 상품 데이터 (Mock Data - Naver API 불가 시 폴백)
 # ─────────────────────────────────────────────────────────────────────────────
 MOCK_PRODUCTS = [
     {
@@ -307,17 +395,10 @@ is_product_request는 상품 검색/추천/재검색/조건 변경을 원할 때
         return {"is_product_request": False, "user_intent_summary": user_msg}
 
 
-# 현재 Mock DB에 실제로 존재하는 카테고리
-_DB_CATEGORIES = {"충전기", "선풍기"}
-
-
-def search_products(context: dict) -> tuple[list, bool]:
-    """저장된 검색 컨텍스트 기반 상품 필터링.
-    반환값: (상품 리스트, DB에 해당 카테고리가 있는지 여부)
-    """
+def _search_mock(context: dict) -> tuple[list, bool]:
+    """Mock Data 기반 상품 검색 (Naver API 불가 시 폴백)"""
     cat = context.get("category", "기타").lower()
 
-    # DB에 없는 카테고리는 즉시 없음 처리
     if cat not in ("충전기", "선풍기", "기타", ""):
         return [], False
 
@@ -327,7 +408,6 @@ def search_products(context: dict) -> tuple[list, bool]:
         results = [p for p in results if p["category"] == "충전기"]
     elif cat == "선풍기":
         results = [p for p in results if p["category"] == "선풍기"]
-    # "기타" / ""는 전체 DB에서 키워드로만 탐색
 
     if max_p := context.get("max_price"):
         results = [p for p in results if p["price"] <= max_p]
@@ -360,9 +440,53 @@ def search_products(context: dict) -> tuple[list, bool]:
     return results[:3], True
 
 
+def search_products(context: dict) -> tuple[list, bool]:
+    """상품 검색: 네이버 쇼핑 API 우선, 불가 시 Mock Data 폴백.
+    반환값: (상품 리스트, 해당 카테고리 검색 가능 여부)
+    """
+    client_id, _ = _get_naver_creds()
+
+    if client_id:
+        cat = context.get("category", "")
+        keywords = context.get("search_keywords", [])
+        features = context.get("required_features", [])
+
+        query_parts = []
+        if cat and cat not in ("기타", ""):
+            query_parts.append(cat)
+        query_parts.extend(keywords[:2])
+        if features:
+            query_parts.append(features[0])
+
+        query = " ".join(query_parts) if query_parts else "전자기기"
+        results = search_naver_shopping(query, display=7)
+
+        if max_p := context.get("max_price"):
+            results = [p for p in results if p["price"] <= max_p]
+        if min_p := context.get("min_price"):
+            results = [p for p in results if p["price"] >= min_p]
+
+        return results[:3], True  # 네이버 쇼핑은 모든 카테고리 커버
+
+    return _search_mock(context)
+
+
 def analyze_unique_features(product: dict, model) -> str:
-    """AI로 상품의 독특하고 차별화된 기능 분석"""
-    prompt = f"""전자기기 전문 분석가로서, 아래 상품 상세 텍스트에서
+    """AI로 상품의 핵심 특징 분석 (네이버 상품: 이름 기반, Mock: 상세 텍스트 기반)"""
+    if product.get("is_real_product"):
+        prompt = f"""전자기기 전문 분석가로서, 아래 상품명을 보고 이 제품의
+핵심 특징과 구매 포인트를 2~3가지 분석해주세요.
+
+[상품명] {product['name']}
+[브랜드] {product.get('brand', '-')}
+[카테고리] {product.get('category', '-')}
+
+형식 (이 형식 그대로만 응답):
+• [특징]: 한 줄 설명
+• [특징]: 한 줄 설명
+• [특징]: 한 줄 설명"""
+    else:
+        prompt = f"""전자기기 전문 분석가로서, 아래 상품 상세 텍스트에서
 이 제품만의 독특하고 차별화된 기능을 2~3가지 찾아내세요.
 일반 스펙(무게, 크기) 제외, 진짜 독특한 기술/설계만 선택하세요.
 
@@ -382,18 +506,44 @@ def analyze_unique_features(product: dict, model) -> str:
 
 
 def analyze_reviews(product: dict, model) -> dict:
-    """AI로 리뷰에서 광고성 제거 후 진짜 장단점 추출"""
-    pos = "\n".join(f"- {r}" for r in product["reviews_positive"])
-    neg = "\n".join(f"- {r}" for r in product["reviews_negative"])
+    """AI로 리뷰 분석 (리뷰 없으면 AI 지식 기반 예측)"""
+    pos = product.get("reviews_positive", [])
+    neg = product.get("reviews_negative", [])
+
+    if not pos and not neg:
+        # 네이버 상품: 실제 리뷰 없음 → AI 지식 기반 예측
+        prompt = f"""전자기기 전문가로서, 아래 상품과 같은 종류의 제품들의
+일반적인 사용자 경험을 예측해주세요. AI 지식 기반이므로 보편적 특성만 제시합니다.
+
+[상품명] {product['name']}
+[카테고리] {product.get('category', '-')}
+
+JSON 형식으로만 응답 (마크다운 없이):
+{{
+    "real_pros": ["예상 장점1", "예상 장점2", "예상 장점3"],
+    "real_cons": ["예상 주의사항1", "예상 주의사항2"],
+    "recommendation": "이런 분께 적합 / 이런 분은 고려 필요 (한 줄)"
+}}"""
+        try:
+            text = re.sub(r"```json\n?|\n?```", "", model.generate_content(prompt).text).strip()
+            result = json.loads(text)
+            result["no_review_data"] = True
+            return result
+        except Exception:
+            return {"real_pros": [], "real_cons": [], "recommendation": "", "no_review_data": True}
+
+    # Mock 상품: 실제 리뷰 데이터 분석
+    pos_str = "\n".join(f"- {r}" for r in pos)
+    neg_str = "\n".join(f"- {r}" for r in neg)
 
     prompt = f"""소비자 리뷰 전문 분석가로서, 아래 실제 구매 리뷰를 분석해주세요.
 광고성 내용을 걸러내고 반드시 알아야 할 진짜 장단점을 추출하세요.
 
 [상품명] {product['name']}
 [긍정 리뷰]
-{pos}
+{pos_str}
 [부정 리뷰]
-{neg}
+{neg_str}
 
 JSON 형식으로만 응답 (마크다운 없이):
 {{
@@ -481,35 +631,64 @@ def generate_chat_response(history: list, user_msg: str, model) -> str:
 # UI 컴포넌트
 # ─────────────────────────────────────────────────────────────────────────────
 def render_product_card(data: dict):
-    """상품 카드 렌더링 (expander 형태의 특이 기능 + 리뷰 분석 포함)"""
+    """상품 카드 렌더링 (네이버 실시간 상품 + Mock 상품 모두 지원)"""
     p = data["product"]
     unique_features: str = data.get("unique_features", "")
     review: dict = data.get("review_analysis", {})
+    is_real = p.get("is_real_product", False)
 
     with st.container(border=True):
-        col_name, col_price = st.columns([3, 1])
-        with col_name:
-            st.markdown(f"### {p['icon']} {p['name']}")
-        with col_price:
-            st.markdown(
-                f"<h3 style='color:#e44d26; text-align:right;'>₩{p['price']:,}</h3>",
-                unsafe_allow_html=True,
-            )
+        # 헤더: 이미지 (네이버 상품) + 이름 + 가격
+        image_url = p.get("image", "")
+        if is_real and image_url:
+            col_img, col_info = st.columns([1, 4])
+            with col_img:
+                st.image(image_url, use_container_width=True)
+            with col_info:
+                col_name, col_price = st.columns([3, 1])
+                with col_name:
+                    st.markdown(f"### {p['icon']} {p['name']}")
+                with col_price:
+                    st.markdown(
+                        f"<h3 style='color:#e44d26;text-align:right;'>₩{p['price']:,}</h3>",
+                        unsafe_allow_html=True,
+                    )
+                if p.get("review_count"):
+                    st.caption(f"📝 리뷰 **{p['review_count']:,}개** · 🏪 {p.get('mall_name', '')}")
+                else:
+                    st.caption(f"🏪 {p.get('mall_name', '')}")
+        else:
+            col_name, col_price = st.columns([3, 1])
+            with col_name:
+                st.markdown(f"### {p['icon']} {p['name']}")
+            with col_price:
+                st.markdown(
+                    f"<h3 style='color:#e44d26;text-align:right;'>₩{p['price']:,}</h3>",
+                    unsafe_allow_html=True,
+                )
+            if p.get("rating"):
+                stars = "⭐" * int(p["rating"])
+                st.caption(f"{stars} **{p['rating']}** · 리뷰 {p['review_count']:,}개 · {p['weight']}")
 
-        stars = "⭐" * int(p["rating"])
-        st.caption(f"{stars} **{p['rating']}** · 리뷰 {p['review_count']:,}개 · {p['weight']}")
-
-        # 쿠팡 유사 상품 검색 버튼
-        search_query = p.get("coupang_search_query", p["name"])
-        coupang_url = (
-            "https://www.coupang.com/np/search?q="
-            + urllib.parse.quote(search_query)
-        )
-        col_btn, col_note = st.columns([2, 3])
-        with col_btn:
-            st.link_button("🔍 쿠팡 유사 상품 검색", coupang_url, use_container_width=True)
-        with col_note:
-            st.caption(f"🔎 검색어: **{search_query}**  \n⚠️ 현재 예시 데이터 기반 — 실제 상품과 다를 수 있음")
+        # 구매 버튼
+        if is_real:
+            aff_link = make_affiliate_link(p["name"])
+            naver_link = p.get("naver_link", "")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.link_button("🛍️ G마켓에서 구매", aff_link, use_container_width=True, type="primary")
+            with col2:
+                if naver_link:
+                    st.link_button("🔍 네이버쇼핑 비교", naver_link, use_container_width=True)
+            st.caption("💰 G마켓 제휴 링크 (구매 시 수수료 발생) · 네이버쇼핑에서 최저가 비교 가능")
+        else:
+            search_query = p.get("coupang_search_query", p["name"])
+            coupang_url = "https://www.coupang.com/np/search?q=" + urllib.parse.quote(search_query)
+            col_btn, col_note = st.columns([2, 3])
+            with col_btn:
+                st.link_button("🔍 쿠팡 유사 상품 검색", coupang_url, use_container_width=True)
+            with col_note:
+                st.caption(f"🔎 검색어: **{search_query}**  \n⚠️ 현재 예시 데이터 기반 — 실제 상품과 다를 수 있음")
 
         # 스펙 표 (잘림 없는 HTML 테이블)
         spec = p["spec"]
@@ -533,27 +712,34 @@ def render_product_card(data: dict):
 
         col_exp1, col_exp2 = st.columns(2)
         with col_exp1:
-            with st.expander("✨ AI 발굴 특이 기능"):
+            label1 = "✨ AI 분석 특징" if is_real else "✨ AI 발굴 특이 기능"
+            with st.expander(label1):
                 st.markdown(unique_features or "분석 데이터 없음")
 
         with col_exp2:
-            with st.expander("📊 리뷰 기반 진짜 장단점"):
+            no_review = review.get("no_review_data", False)
+            label2 = "🤖 AI 예측 장단점" if no_review else "📊 리뷰 기반 진짜 장단점"
+            with st.expander(label2):
+                if no_review:
+                    st.caption("⚠️ 실제 리뷰 없음 · AI 지식 기반 예측")
+
                 pros = review.get("real_pros", [])
                 cons = review.get("real_cons", [])
                 rec = review.get("recommendation", "")
 
-                st.markdown("**👍 진짜 장점**")
-                for item in pros:
-                    if item:
-                        st.markdown(f"✅ {item}")
-
-                st.markdown("**👎 주의할 단점**")
-                for item in cons:
-                    if item:
-                        st.markdown(f"❌ {item}")
-
-                if rec:
-                    st.info(f"💡 {rec}")
+                if pros or cons:
+                    st.markdown("**👍 장점**")
+                    for item in pros:
+                        if item:
+                            st.markdown(f"✅ {item}")
+                    st.markdown("**👎 주의사항**")
+                    for item in cons:
+                        if item:
+                            st.markdown(f"❌ {item}")
+                    if rec:
+                        st.info(f"💡 {rec}")
+                else:
+                    st.info("리뷰 데이터가 없습니다.")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -600,8 +786,14 @@ def main():
                 st.rerun()
 
         st.markdown("---")
-        st.markdown("### 📦 모의 상품 DB")
-        st.markdown("- 충전기: UGREEN 100W, 샤오미 33W\n- 선풍기: 다이슨 AM07, 보이어 BF-1290")
+        naver_id, _ = _get_naver_creds()
+        if naver_id:
+            st.success("🌐 네이버 쇼핑 실시간 검색 중")
+            st.caption("충전기·보조배터리·이어폰·노트북 등\n모든 전자기기 실시간 검색 가능")
+        else:
+            st.warning("📦 예시 데이터 모드")
+            st.markdown("- 충전기: UGREEN 100W, 샤오미 33W\n- 선풍기: 다이슨 AM07, 보이어 BF-1290")
+            st.caption("Streamlit Secrets에 NAVER_CLIENT_ID 등록 시 실시간 전환")
 
         if st.button("🗑️ 대화 초기화", use_container_width=True, type="secondary"):
             st.session_state.messages = []
@@ -628,15 +820,26 @@ def main():
     # ── 웰컴 메시지 (첫 방문 시) ──────────────────────────────────────────────
     if not st.session_state.messages:
         with st.chat_message("assistant"):
-            st.markdown(
-                """안녕하세요! 저는 **쿠팡 AI 쇼핑 어시스턴트**입니다 🛒
+            naver_id, _ = _get_naver_creds()
+            if naver_id:
+                st.markdown(
+                    """안녕하세요! 저는 **AI 전자기기 추천 어시스턴트**입니다 🛒
+
+**네이버 쇼핑 실시간 데이터**를 기반으로 원하시는 전자기기를 찾아드립니다.
+추천 후에도 *"더 저렴한 걸로"*, *"5만원 이하로"* 처럼 대화를 이어갈 수 있어요!
+
+> 충전기 · 보조배터리 · 이어폰 · 선풍기 · 노트북 등 모든 전자기기 검색 가능 ✨"""
+                )
+            else:
+                st.markdown(
+                    """안녕하세요! 저는 **쿠팡 AI 쇼핑 어시스턴트**입니다 🛒
 
 원하시는 전자기기를 편하게 말씀해주세요.
 추천 이후에도 *"더 저렴한 걸로"*, *"더 가벼운 거"*, *"2만원 이하로 다시"* 처럼
 대화를 이어가며 조건을 좁혀나갈 수 있어요! ✨
 
 > **현재 DB:** GaN 멀티충전기 2종 / DC인버터 선풍기 2종"""
-            )
+                )
 
     # ── 채팅 기록 렌더링 ──────────────────────────────────────────────────────
     for msg in st.session_state.messages:
