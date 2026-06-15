@@ -705,13 +705,15 @@ def render_product_card(data: dict):
         # 구매 버튼
         if is_real:
             aff_link = make_affiliate_link(p["name"])
-            naver_link = p.get("naver_link", "")
+            naver_search = (
+                "https://search.shopping.naver.com/search/all?query="
+                + urllib.parse.quote(p["name"])
+            )
             col1, col2 = st.columns(2)
             with col1:
                 st.link_button("🛍️ G마켓에서 구매", aff_link, use_container_width=True, type="primary")
             with col2:
-                if naver_link:
-                    st.link_button("🔍 네이버쇼핑 비교", naver_link, use_container_width=True)
+                st.link_button("🔍 네이버쇼핑 최저가", naver_search, use_container_width=True)
             st.caption("💰 G마켓 제휴 링크 (구매 시 수수료 발생) · 네이버쇼핑에서 최저가 비교 가능")
         else:
             search_query = p.get("coupang_search_query", p["name"])
