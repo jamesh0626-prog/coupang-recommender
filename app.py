@@ -340,10 +340,42 @@ def get_api_key() -> str | None:
         return None
 
 
-@st.cache_resource
-def get_gemini_model(api_key: str):
+@st.cache_data(ttl=3600, show_spinner=False)
+def list_available_models(api_key: str) -> list[str]:
+    """이 API 키로 실제 호출 가능한 gemini flash 모델 목록 조회"""
     genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-1.5-flash")
+    try:
+        names = []
+        for m in genai.list_models():
+            if "generateContent" not in getattr(m, "supported_generation_methods", []):
+                continue
+            name = m.name.replace("models/", "")
+            if name.startswith("gemini") and "flash" in name:
+                names.append(name)
+        return names
+    except Exception:
+        return []
+
+
+def pick_default_model(available: list[str]) -> str:
+    """가용 모델 중 성능·무료한도 균형이 좋은 모델 우선 선택"""
+    preferred = [
+        "gemini-2.5-flash",
+        "gemini-flash-latest",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash-lite",
+    ]
+    for name in preferred:
+        if name in available:
+            return name
+    return available[0] if available else "gemini-2.5-flash"
+
+
+@st.cache_resource
+def get_gemini_model(api_key: str, model_name: str):
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel(model_name)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -771,6 +803,24 @@ def main():
         if api_input:
             st.session_state.GOOGLE_API_KEY = api_input
 
+        # 모델 선택 (API 키가 있을 때만, 실제 가용 모델만 표시)
+        _key_now = get_api_key()
+        if _key_now:
+            _avail = list_available_models(_key_now)
+            if _avail:
+                _default = pick_default_model(_avail)
+                _prev = st.session_state.get("selected_model", _default)
+                _idx = _avail.index(_prev) if _prev in _avail else _avail.index(_default)
+                _chosen = st.selectbox(
+                    "🤖 AI 모델",
+                    _avail,
+                    index=_idx,
+                    help="이 API 키로 실제 사용 가능한 모델 목록입니다. 한도 초과 시 다른 모델로 바꿔보세요.",
+                )
+                st.session_state.selected_model = _chosen
+            else:
+                st.error("⚠️ 사용 가능한 모델을 불러오지 못했습니다. API 키를 확인해주세요.")
+
         st.markdown("---")
         st.markdown("### 💡 예시 질문 (클릭)")
         examples = [
@@ -800,7 +850,8 @@ def main():
             st.session_state.search_context = {}
             st.rerun()
 
-        st.caption("⚡ Powered by Gemini 3.5 Flash")
+        _cur = st.session_state.get("selected_model", "")
+        st.caption(f"⚡ Powered by {_cur or 'Gemini'}")
 
     # ── Session State 초기화 ──────────────────────────────────────────────────
     if "messages" not in st.session_state:
@@ -815,7 +866,10 @@ def main():
         st.info("🔑 Google AI Studio (aistudio.google.com) 에서 무료로 발급 가능합니다.")
         return
 
-    model = get_gemini_model(api_key)
+    model_name = st.session_state.get("selected_model") or pick_default_model(
+        list_available_models(api_key)
+    )
+    model = get_gemini_model(api_key, model_name)
 
     # ── 웰컴 메시지 (첫 방문 시) ──────────────────────────────────────────────
     if not st.session_state.messages:
