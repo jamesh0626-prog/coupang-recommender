@@ -37,10 +37,16 @@ LINKPRICE_AFFILIATE_ID = "A100705252"
 
 
 def make_affiliate_link(search_query: str) -> str:
-    """상품 검색어 → G마켓 Linkprice 제휴 딥링크"""
-    gmarket_search = "https://browse.gmarket.co.kr/search?keyword=" + urllib.parse.quote(search_query)
+    """상품 검색어 → G마켓 Linkprice 제휴 딥링크 (검색 결과 페이지로 직접 연결).
+    검색어는 미리 인코딩하지 않고 raw 상태로 넣은 뒤 전체 URL을 한 번만 인코딩한다
+    (이중 인코딩 방지 — 링크프라이스 딥링크 변환기 출력과 동일).
+    """
+    gmarket_search = "https://browse.gmarket.co.kr/search?keyword=" + search_query
     encoded = urllib.parse.quote(gmarket_search, safe="")
-    return f"https://lpweb.kr/click.php?m=gmarket&a={LINKPRICE_AFFILIATE_ID}&l=0000&url={encoded}"
+    return (
+        f"https://linkmoa.kr/click.php?m=gmarket&a={LINKPRICE_AFFILIATE_ID}"
+        f"&l=9999&l_cd1=3&l_cd2=0&tu={encoded}"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
